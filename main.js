@@ -1,12 +1,7 @@
-import './style.css'
-
-document.querySelector('#app').innerHTML = `
-  <h1>Hello Vite!</h1>
-  <a href="https://vitejs.dev/guide/features.html" target="_blank">Documentation</a>
-`
+import './style.css';
 
 import firebase from 'firebase/app';
-import 'firebase/firestore'
+import 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: "AIzaSyD_uIl8ds_EDFRORaSHHsbiu-85nqAfz5o",
@@ -18,12 +13,10 @@ const firebaseConfig = {
   measurementId: "G-VTCK9SWEMM"
 };
 
-if (!firebase.app.length) {
+if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
-
 const firestore = firebase.firestore();
-
 
 const servers = {
   iceServers: [
@@ -35,7 +28,7 @@ const servers = {
 };
 
 // Global State
-let pc = new RTCPeerConnection(servers);
+const pc = new RTCPeerConnection(servers);
 let localStream = null;
 let remoteStream = null;
 
@@ -59,19 +52,23 @@ webcamButton.onclick = async () => {
   });
 
   // Pull tracks from remote stream, add to video stream
-  pc.ontrack = event => {
-    event.streams[0].getTracks().forEach(track => {
+  pc.ontrack = (event) => {
+    event.streams[0].getTracks().forEach((track) => {
       remoteStream.addTrack(track);
     });
   };
 
   webcamVideo.srcObject = localStream;
   remoteVideo.srcObject = remoteStream;
+
+  callButton.disabled = false;
+  answerButton.disabled = false;
+  webcamButton.disabled = true;
 };
 
 // 2. Create an offer
 callButton.onclick = async () => {
-  // Reference Firestore collection
+  // Reference Firestore collections for signalling
   const callDoc = firestore.collection('calls').doc();
   const offerCandidates = callDoc.collection('offerCandidates');
   const answerCandidates = callDoc.collection('answerCandidates');
@@ -79,12 +76,12 @@ callButton.onclick = async () => {
   callInput.value = callDoc.id;
 
   // Get candidates for caller, save to db
-  pc.onicecandidate = event => {
+  pc.onicecandidate = (event) => {
     event.candidate && offerCandidates.add(event.candidate.toJSON());
   };
 
   //  Create offer
-  const offerDescription = await pc.createAnswer();
+  const offerDescription = await pc.createOffer();
   await pc.setLocalDescription(offerDescription);
 
   const offer = {
@@ -96,7 +93,7 @@ callButton.onclick = async () => {
 
 
   // Listen for remote answer
-  callDoc.onSnapshot((snapshot)=> {
+  callDoc.onSnapshot((snapshot) => {
     const data = snapshot.data();
     if (!pc.currentRemoteDescription && data?.answer){
       const answerDescription = new RTCSessionDescription(data.answer);
@@ -105,14 +102,51 @@ callButton.onclick = async () => {
   });
 
   // When answered, add candidate to peer connection
-  answerCandidates.onSnapshot(snapshot => {
-    snapshot.docChanges().forEach((change) =>{
-      if(change.type == 'added'){
+  answerCandidates.onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if(change.type === 'added') {
         const candidate = new RTCIceCandidate(change.doc.data());
         pc.addIceCandidate(candidate);
       }
     })
   });
 
-}
+  hangupButton.disabled = false;
+};
 
+// 3. Answer the call with the unique ID
+answerButton.onclick = async () => {
+  const callId = callInput.value;
+  const callDoc = firestore.collection('calls').doc(callId);
+  const answerCandidates = callDoc.collection('answerCandidates');
+  const offerCandidates = callDoc.collection('offerCandidates');
+  pc.onicecandidate = (event) =>{
+    event.candidate && answerCandidates.add(event.candidate.toJSON())
+  };
+
+  const callData = (await callDoc.get()).data();
+
+  const offerDescription = callData.offer;
+  await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
+
+  const answerDescription = await pc.createAnswer();
+  await pc.setLocalDescription(answerDescription);
+
+  const answer = {
+    type: answerDescription.type,
+    sdp: answerDescription.sdp,
+  };
+
+  await callDoc.update({ answer });
+
+  offerCandidates.onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      console.log(change);
+      if(change.type === 'added'){
+        let data = change.doc.data();
+        pc.addIceCandidate(new RTCIceCandidate(data));
+      }
+    });
+  });
+
+};
